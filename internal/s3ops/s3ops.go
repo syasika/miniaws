@@ -6,11 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/syasika/miniaws/internal/awsclient"
 )
 
 type Object struct {
@@ -19,33 +20,11 @@ type Object struct {
 }
 
 func IsConnectionErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "no such host") ||
-		strings.Contains(errStr, "i/o timeout") ||
-		strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "dial tcp")
+	return awsclient.IsConnectionErr(err)
 }
 
 func ConnectionFriendlyErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if IsConnectionErr(err) {
-		return fmt.Errorf("cannot reach ministack — is the container running?")
-	}
-	errStr := err.Error()
-	if strings.Contains(errStr, "api error ") {
-		parts := strings.SplitN(errStr, "api error ", 2)
-		if len(parts) == 2 {
-			msg := strings.ToLower(strings.TrimSpace(parts[1]))
-			return fmt.Errorf("S3 API error: %s", msg)
-		}
-	}
-	return err
+	return awsclient.FriendlyErr(err, "S3")
 }
 
 func ListBuckets(ctx context.Context, client *s3.Client) ([]string, error) {

@@ -97,13 +97,17 @@ Global flags:
 
 Launch with `miniaws browse`. The dashboard shows the container status at the top, then the active service panel.
 
-**Service switcher** — press `[1]` for S3, `[2]` for SSM Parameter Store.
+**Service switcher** — press `[1]` for S3, `[2]` for SSM Parameter Store, `[3]` for SQS.
+
+Destructive actions (delete object, delete parameter, delete queue, delete message, stop container) prompt for `y`/`N` confirmation before executing.
 
 | View | Controls |
 |------|----------|
 | **S3 buckets** | `↑`/`↓` navigate, `enter` to browse objects |
-| **S3 objects** | `u` upload, `d` download, `del` delete, `esc` back |
-| **SSM params** | `↑`/`↓` navigate, `enter` for value, `del` delete, `[`/`]` page |
+| **S3 objects** | `u` upload, `d` download, `del` delete (with confirmation), `esc` back |
+| **SSM params** | `↑`/`↓` navigate, `enter` for value, `del` delete (with confirmation), `[`/`]` page |
+| **SQS queues** | `↑`/`↓` navigate, `enter` for messages, `c` create, `del` delete (with confirmation) |
+| **SQS messages** | `↑`/`↓` navigate, `s` send, `del` delete (with confirmation), `esc` back |
 
 ## Storage
 

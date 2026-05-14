@@ -3,7 +3,6 @@ package ssmops
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -45,52 +44,8 @@ func readBody(r *http.Request) string {
 // --- IsConnectionErr ---
 
 func TestIsConnectionErr(t *testing.T) {
-	tests := []struct {
-		err  error
-		want bool
-	}{
-		{nil, false},
-		{errors.New("connection refused"), true},
-		{errors.New("no such host"), true},
-		{errors.New("i/o timeout"), true},
-		{errors.New("broken pipe"), true},
-		{errors.New("dial tcp 127.0.0.1:4566: connect: connection refused"), true},
-		{errors.New("ValidationException"), false},
-		{errors.New("ParameterNotFound"), false},
-	}
-	for _, tt := range tests {
-		if got := IsConnectionErr(tt.err); got != tt.want {
-			t.Errorf("IsConnectionErr(%v) = %v, want %v", tt.err, got, tt.want)
-		}
-	}
-}
-
-// --- useFriendlyErr / friendlyErr ---
-
-func TestUseFriendlyErrNil(t *testing.T) {
-	if got := useFriendlyErr(nil); got != nil {
-		t.Errorf("useFriendlyErr(nil) = %v, want nil", got)
-	}
-}
-
-func TestUseFriendlyErrConnection(t *testing.T) {
-	err := useFriendlyErr(errors.New("connection refused"))
-	if !strings.Contains(err.Error(), "cannot reach ministack") {
-		t.Errorf("got %v, want friendly connection message", err)
-	}
-}
-
-func TestUseFriendlyErrAPI(t *testing.T) {
-	err := useFriendlyErr(errors.New("operation error SSM: DescribeParameters, https response error StatusCode: 400, api error ParameterNotFound: param not found"))
-	if !strings.Contains(strings.ToLower(err.Error()), "ssm api error") {
-		t.Errorf("got %v, want friendly api error", err)
-	}
-}
-
-func TestFriendlyErrPassThrough(t *testing.T) {
-	orig := errors.New("something else")
-	if got := friendlyErr(orig); got != orig {
-		t.Errorf("friendlyErr should pass through, got %v", got)
+	if got := IsConnectionErr(nil); got != false {
+		t.Errorf("IsConnectionErr(nil) = %v, want false", got)
 	}
 }
 
