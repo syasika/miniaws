@@ -4,8 +4,22 @@ A CLI utility to spin up a [ministack](https://hub.docker.com/r/ministackorg/min
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.26+
 - Docker (for `init`, `container start/stop/status/remove`)
+
+### Nix / direnv (optional)
+
+A `flake.nix` is provided for a reproducible development shell:
+
+```bash
+# If you use direnv:
+direnv allow
+
+# Or enter the shell manually:
+nix develop
+```
+
+This provides Go 1.26, `gopls`, and `golangci-lint` without installing them globally.
 
 ## Install
 
