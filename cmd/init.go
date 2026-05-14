@@ -47,17 +47,32 @@ func runInit(cmd *cobra.Command, args []string) error {
 			config.EndpointURL = "http://localhost:" + config.Port
 		}
 		ci, err := inspectContainer(ctx, cli, config.ContainerName)
-		if err == nil && ci.State.Status == "running" {
-			fmt.Printf("%s Container '%s' is already running (image: %s)\n", initSuccess.Render("✓"), config.ContainerName, config.ImageName)
-			return nil
-		}
-		if err == nil && ci.State.Status == "exited" {
-			fmt.Printf("Container '%s' exists but is stopped. Starting it...\n", config.ContainerName)
-			if err := cli.ContainerStart(ctx, config.ContainerName, container.StartOptions{}); err != nil {
-				return fmt.Errorf("failed to start container: %w", err)
+		if err != nil {
+			if !cerrdefs.IsNotFound(err) {
+				return fmt.Errorf("failed to inspect container: %w", err)
 			}
-			fmt.Printf("%s Container '%s' started\n", initSuccess.Render("✓"), config.ContainerName)
-			return nil
+		} else {
+			switch ci.State.Status {
+			case "running":
+				fmt.Printf("%s Container '%s' is already running (image: %s)\n", initSuccess.Render("✓"), config.ContainerName, config.ImageName)
+				return nil
+			case "exited":
+				fmt.Printf("Container '%s' exists but is stopped. Starting it...\n", config.ContainerName)
+				if err := cli.ContainerStart(ctx, config.ContainerName, container.StartOptions{}); err != nil {
+					return fmt.Errorf("failed to start container: %w", err)
+				}
+				fmt.Printf("%s Container '%s' started\n", initSuccess.Render("✓"), config.ContainerName)
+				return nil
+			case "paused":
+				fmt.Printf("Container '%s' is paused. Unpausing...\n", config.ContainerName)
+				if err := cli.ContainerUnpause(ctx, config.ContainerName); err != nil {
+					return fmt.Errorf("failed to unpause container: %w", err)
+				}
+				fmt.Printf("%s Container '%s' unpaused\n", initSuccess.Render("✓"), config.ContainerName)
+				return nil
+			default:
+				return fmt.Errorf("unexpected container state: %s", ci.State.Status)
+			}
 		}
 	}
 
@@ -154,8 +169,11 @@ func ensureContainer(ctx context.Context, cli *client.Client, config *Config) er
 			config.ImageName = input
 			continue
 		}
-		io.Copy(io.Discard, pullReader)
+		_, err = io.Copy(io.Discard, pullReader)
 		pullReader.Close()
+		if err != nil {
+			return fmt.Errorf("failed to pull image: %w", err)
+		}
 
 		fmt.Printf("Creating container '%s'...\n", config.ContainerName)
 

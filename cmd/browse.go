@@ -3,25 +3,23 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 
 	"github.com/syasika/miniaws/internal/awsclient"
 	"github.com/syasika/miniaws/internal/s3ops"
-	"github.com/syasika/miniaws/internal/ssmops"
+	"github.com/syasika/miniaws/internal/sqsops"
 )
 
 var browseCmd = &cobra.Command{
 	Use:   "browse",
 	Short: "Interactive TUI dashboard for ministack",
-	Long:  `Launch a terminal UI to browse container status, S3 buckets and their objects.`,
+	Long:  `Launch a terminal UI to browse container status, S3 buckets, SSM parameters, and SQS queues.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		endpoint, _ := cmd.Flags().GetString("endpoint-url")
 		p := tea.NewProgram(initialModel(endpoint), tea.WithAltScreen())
@@ -37,6 +35,10 @@ const (
 	viewObjects
 	viewUpload
 	viewSSM
+	viewSQS
+	viewQueueMessages
+	viewCreateQueue
+	viewSendMessage
 )
 
 type status string
@@ -73,7 +75,23 @@ type model struct {
 	prevTokens    []string
 	pageLabel     string
 
+	// SQS fields
+	queues          []sqsops.Queue
+	queuesErr       string
+	queueCursor     int
+	currentQueueURL string
+	messages        []sqsops.Message
+	messagesErr     string
+	msgCursor       int
+
 	uploadInput textinput.Model
+	createInput textinput.Model
+
+	awsCfg     aws.Config
+	dockerCli  *client.Client
+	confirming *confirmState
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	statusLine string
 	width      int
@@ -81,10 +99,15 @@ type model struct {
 }
 
 type ssmParam struct {
-	Name         string
-	Type         string
-	Value        string
-	Version      int64
+	Name    string
+	Type    string
+	Value   string
+	Version int64
+}
+
+type confirmState struct {
+	prompt string
+	onYes  tea.Cmd
 }
 
 func initialModel(endpoint string) model {
@@ -93,15 +116,31 @@ func initialModel(endpoint string) model {
 	ti.Width = 50
 	ti.CharLimit = 256
 
+	ci := textinput.New()
+	ci.Placeholder = "queue-name"
+	ci.Width = 50
+	ci.CharLimit = 256
+
+	dockerCli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return model{
 		state:       statusLoading,
 		endpoint:    endpoint,
 		uploadInput: ti,
+		createInput: ci,
+		awsCfg:      awsclient.NewConfig(),
+		dockerCli:   dockerCli,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchContainerStatus, func() tea.Msg { return fetchBuckets(m.endpoint) })
+	return tea.Batch(
+		func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+		func() tea.Msg { return fetchBuckets(m.ctx, m.awsCfg, m.endpoint) },
+	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -112,6 +151,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.confirming != nil {
+			switch msg.String() {
+			case "y", "Y":
+				cmd := m.confirming.onYes
+				m.confirming = nil
+				return m, cmd
+			default:
+				m.confirming = nil
+				m.statusLine = "Cancelled"
+				return m, nil
+			}
+		}
+
 		if m.mode == viewUpload {
 			switch msg.String() {
 			case "esc":
@@ -129,7 +181,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.statusLine = fmt.Sprintf("Uploading %s...", path)
-				return m, func() tea.Msg { return doUpload(m.endpoint, m.currentBucket, path) }
+				return m, func() tea.Msg { return doUpload(m.ctx, m.awsCfg, m.endpoint, m.currentBucket, path) }
+			default:
+				var cmd tea.Cmd
+				m.uploadInput, cmd = m.uploadInput.Update(msg)
+				return m, cmd
+			}
+		}
+
+		if m.mode == viewCreateQueue {
+			switch msg.String() {
+			case "esc":
+				m.mode = viewSQS
+				m.createInput.SetValue("")
+				m.createInput.Blur()
+				return m, nil
+			case "enter":
+				name := m.createInput.Value()
+				m.mode = viewSQS
+				m.createInput.SetValue("")
+				m.createInput.Blur()
+				if name == "" {
+					m.statusLine = "Create cancelled"
+					return m, nil
+				}
+				m.statusLine = fmt.Sprintf("Creating queue %s...", name)
+				return m, func() tea.Msg { return doCreateQueue(m.ctx, m.awsCfg, m.endpoint, name) }
+			default:
+				var cmd tea.Cmd
+				m.createInput, cmd = m.createInput.Update(msg)
+				return m, cmd
+			}
+		}
+
+		if m.mode == viewSendMessage {
+			switch msg.String() {
+			case "esc":
+				m.mode = viewQueueMessages
+				m.uploadInput.SetValue("")
+				m.uploadInput.Blur()
+				return m, nil
+			case "enter":
+				body := m.uploadInput.Value()
+				m.mode = viewQueueMessages
+				m.uploadInput.SetValue("")
+				m.uploadInput.Blur()
+				if body == "" {
+					m.statusLine = "Send cancelled"
+					return m, nil
+				}
+				m.statusLine = "Sending message..."
+				return m, func() tea.Msg { return doSendMessage(m.ctx, m.awsCfg, m.endpoint, m.currentQueueURL, body) }
 			default:
 				var cmd tea.Cmd
 				m.uploadInput, cmd = m.uploadInput.Update(msg)
@@ -139,31 +241,65 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
+			m.cancel()
 			return m, tea.Quit
 
 		case "esc":
-			if m.mode == viewObjects {
+			switch m.mode {
+			case viewObjects:
 				m.mode = viewBuckets
 				m.objects = nil
 				m.objectsErr = ""
 				m.statusLine = ""
-			} else {
+			case viewQueueMessages:
+				m.mode = viewSQS
+				m.messages = nil
+				m.messagesErr = ""
+				m.statusLine = ""
+			default:
+				m.cancel()
 				return m, tea.Quit
 			}
 			return m, nil
 
 		case "up", "k":
-			if m.mode == viewBuckets && m.cursor > 0 {
-				m.cursor--
-			} else if m.mode == viewObjects && m.objCursor > 0 {
-				m.objCursor--
+			switch m.mode {
+			case viewBuckets:
+				if m.cursor > 0 {
+					m.cursor--
+				}
+			case viewObjects:
+				if m.objCursor > 0 {
+					m.objCursor--
+				}
+			case viewSQS:
+				if m.queueCursor > 0 {
+					m.queueCursor--
+				}
+			case viewQueueMessages:
+				if m.msgCursor > 0 {
+					m.msgCursor--
+				}
 			}
 
 		case "down", "j":
-			if m.mode == viewBuckets && m.cursor < len(m.buckets)-1 {
-				m.cursor++
-			} else if m.mode == viewObjects && m.objCursor < len(m.objects)-1 {
-				m.objCursor++
+			switch m.mode {
+			case viewBuckets:
+				if m.cursor < len(m.buckets)-1 {
+					m.cursor++
+				}
+			case viewObjects:
+				if m.objCursor < len(m.objects)-1 {
+					m.objCursor++
+				}
+			case viewSQS:
+				if m.queueCursor < len(m.queues)-1 {
+					m.queueCursor++
+				}
+			case viewQueueMessages:
+				if m.msgCursor < len(m.messages)-1 {
+					m.msgCursor++
+				}
 			}
 
 		case "1":
@@ -171,7 +307,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.buckets = nil
 			m.bucketsErr = ""
 			m.state = statusLoading
-			return m, tea.Batch(fetchContainerStatus, func() tea.Msg { return fetchBuckets(m.endpoint) })
+			return m, tea.Batch(
+				func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+				func() tea.Msg { return fetchBuckets(m.ctx, m.awsCfg, m.endpoint) },
+			)
 
 		case "2":
 			m.mode = viewSSM
@@ -181,7 +320,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.nextToken = ""
 			m.prevTokens = nil
 			m.state = statusLoading
-			return m, tea.Batch(fetchContainerStatus, func() tea.Msg { return fetchParams(m.endpoint, "") })
+			return m, tea.Batch(
+				func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+				func() tea.Msg { return fetchParams(m.ctx, m.awsCfg, m.endpoint, "") },
+			)
+
+		case "3":
+			m.mode = viewSQS
+			m.queues = nil
+			m.queuesErr = ""
+			m.state = statusLoading
+			return m, tea.Batch(
+				func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+				func() tea.Msg { return fetchQueues(m.ctx, m.awsCfg, m.endpoint) },
+			)
 
 		case "[", "left":
 			if m.mode == viewSSM && len(m.prevTokens) > 0 {
@@ -190,7 +342,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prevTokens = m.prevTokens[:len(m.prevTokens)-1]
 				m.state = statusLoading
 				m.paramsErr = ""
-				return m, func() tea.Msg { return fetchParams(m.endpoint, m.requestToken) }
+				return m, func() tea.Msg { return fetchParams(m.ctx, m.awsCfg, m.endpoint, m.requestToken) }
 			}
 
 		case "]", "right":
@@ -200,7 +352,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.nextToken = ""
 				m.state = statusLoading
 				m.paramsErr = ""
-				return m, func() tea.Msg { return fetchParams(m.endpoint, m.requestToken) }
+				return m, func() tea.Msg { return fetchParams(m.ctx, m.awsCfg, m.endpoint, m.requestToken) }
 			}
 
 		case "enter":
@@ -211,16 +363,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.objectsErr = ""
 				m.objCursor = 0
 				m.statusLine = "Loading objects..."
-				return m, func() tea.Msg { return fetchObjects(m.endpoint, m.currentBucket) }
+				return m, func() tea.Msg { return fetchObjects(m.ctx, m.awsCfg, m.endpoint, m.currentBucket) }
 			}
 			if m.mode == viewSSM && m.paramCursor < len(m.params) {
 				p := m.params[m.paramCursor]
 				m.statusLine = fmt.Sprintf("Getting value for %s...", p.Name)
-				return m, func() tea.Msg { return fetchParamValue(m.endpoint, p.Name) }
+				return m, func() tea.Msg { return fetchParamValue(m.ctx, m.awsCfg, m.endpoint, p.Name) }
+			}
+			if m.mode == viewSQS && m.queueCursor < len(m.queues) {
+				q := m.queues[m.queueCursor]
+				m.currentQueueURL = q.URL
+				m.mode = viewQueueMessages
+				m.messages = nil
+				m.messagesErr = ""
+				m.msgCursor = 0
+				m.statusLine = "Receiving messages..."
+				return m, func() tea.Msg { return fetchMessages(m.ctx, m.awsCfg, m.endpoint, q.URL) }
+			}
+			if m.mode == viewQueueMessages && m.msgCursor < len(m.messages) {
+				msg := m.messages[m.msgCursor]
+				body := msg.Body
+				if len(body) > 200 {
+					body = body[:200] + "..."
+				}
+				m.statusLine = fmt.Sprintf("[%s] %s", msg.ID, body)
+				return m, nil
 			}
 
 		case "u":
 			if m.mode == viewObjects {
+				m.uploadInput.Placeholder = "path/to/file.txt"
 				m.uploadInput.Focus()
 				m.mode = viewUpload
 				return m, textinput.Blink
@@ -231,46 +403,109 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				obj := m.objects[m.objCursor]
 				if !strings.HasSuffix(obj.Key, "/") {
 					m.statusLine = fmt.Sprintf("Downloading %s...", obj.Key)
-					return m, func() tea.Msg { return doDownload(m.endpoint, m.currentBucket, obj.Key) }
+					return m, func() tea.Msg { return doDownload(m.ctx, m.awsCfg, m.endpoint, m.currentBucket, obj.Key) }
 				}
+			}
+
+		case "c":
+			if m.mode == viewSQS {
+				m.createInput.Focus()
+				m.mode = viewCreateQueue
+				return m, textinput.Blink
 			}
 
 		case "delete", "backspace":
 			if m.mode == viewObjects && m.objCursor < len(m.objects) {
 				obj := m.objects[m.objCursor]
 				if !strings.HasSuffix(obj.Key, "/") {
-					m.statusLine = fmt.Sprintf("Deleting %s...", obj.Key)
-					return m, func() tea.Msg { return doDelete(m.endpoint, m.currentBucket, obj.Key) }
+					m.confirming = &confirmState{
+						prompt: fmt.Sprintf("Delete s3://%s/%s? (y/N)", m.currentBucket, obj.Key),
+						onYes:  func() tea.Msg { return doDelete(m.ctx, m.awsCfg, m.endpoint, m.currentBucket, obj.Key) },
+					}
+					return m, nil
 				}
 			}
 			if m.mode == viewSSM && m.paramCursor < len(m.params) {
 				p := m.params[m.paramCursor]
-				m.statusLine = fmt.Sprintf("Deleting %s...", p.Name)
-				return m, func() tea.Msg { return doDeleteParam(m.endpoint, p.Name) }
+				m.confirming = &confirmState{
+					prompt: fmt.Sprintf("Delete parameter '%s'? (y/N)", p.Name),
+					onYes:  func() tea.Msg { return doDeleteParam(m.ctx, m.awsCfg, m.endpoint, p.Name) },
+				}
+				return m, nil
+			}
+			if m.mode == viewSQS && m.queueCursor < len(m.queues) {
+				q := m.queues[m.queueCursor]
+				m.confirming = &confirmState{
+					prompt: fmt.Sprintf("Delete queue '%s'? (y/N)", q.Name),
+					onYes:  func() tea.Msg { return doDeleteQueue(m.ctx, m.awsCfg, m.endpoint, q.URL) },
+				}
+				return m, nil
+			}
+			if m.mode == viewQueueMessages && m.msgCursor < len(m.messages) {
+				msg := m.messages[m.msgCursor]
+				m.confirming = &confirmState{
+					prompt: fmt.Sprintf("Delete message %s? (y/N)", msg.ID),
+					onYes:  func() tea.Msg { return doDeleteMessage(m.ctx, m.awsCfg, m.endpoint, m.currentQueueURL, msg.ReceiptHandle) },
+				}
+				return m, nil
 			}
 
 		case "r":
 			m.state = statusLoading
-			if m.mode == viewSSM {
+			m.cursor = 0
+			m.objCursor = 0
+			m.paramCursor = 0
+			m.queueCursor = 0
+			m.msgCursor = 0
+			switch m.mode {
+			case viewSSM:
 				m.nextToken = ""
 				m.prevTokens = nil
-				return m, tea.Batch(fetchContainerStatus, func() tea.Msg { return fetchParams(m.endpoint, "") })
+				return m, tea.Batch(
+					func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+					func() tea.Msg { return fetchParams(m.ctx, m.awsCfg, m.endpoint, "") },
+				)
+			case viewSQS:
+				return m, tea.Batch(
+					func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+					func() tea.Msg { return fetchQueues(m.ctx, m.awsCfg, m.endpoint) },
+				)
+			case viewQueueMessages:
+				return m, tea.Batch(
+					func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+					func() tea.Msg { return fetchMessages(m.ctx, m.awsCfg, m.endpoint, m.currentQueueURL) },
+				)
+			case viewBuckets, viewObjects:
+				return m, tea.Batch(
+					func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+					func() tea.Msg { return fetchBuckets(m.ctx, m.awsCfg, m.endpoint) },
+				)
+			default:
+				return m, tea.Batch(
+					func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+					func() tea.Msg { return fetchObjects(m.ctx, m.awsCfg, m.endpoint, m.currentBucket) },
+				)
 			}
-			if m.mode == viewBuckets || m.mode == viewObjects {
-				return m, tea.Batch(fetchContainerStatus, func() tea.Msg { return fetchBuckets(m.endpoint) })
-			}
-			return m, tea.Batch(fetchContainerStatus, func() tea.Msg { return fetchObjects(m.endpoint, m.currentBucket) })
 
 		case "s":
+			if m.mode == viewQueueMessages {
+				m.uploadInput.Placeholder = "message body"
+				m.uploadInput.Focus()
+				m.mode = viewSendMessage
+				return m, textinput.Blink
+			}
 			if !strings.Contains(m.containerStatus, "running") {
 				m.statusLine = "Starting container..."
-				return m, startContainer
+				return m, func() tea.Msg { return startContainer(m.ctx, m.dockerCli) }
 			}
 
 		case "x":
 			if strings.Contains(m.containerStatus, "running") {
-				m.statusLine = "Stopping container..."
-				return m, stopContainer
+				m.confirming = &confirmState{
+					prompt: fmt.Sprintf("Stop container '%s'? (y/N)", m.containerName),
+					onYes:  func() tea.Msg { return stopContainer(m.ctx, m.dockerCli) },
+				}
+				return m, nil
 			}
 		}
 
@@ -302,6 +537,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case paramsErrMsg:
 		m.paramsErr = msg.err
 		m.params = nil
+		m.pageLabel = ""
 		m.state = statusReady
 
 	case paramValueMsg:
@@ -320,15 +556,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusLine = ""
 		m.state = statusReady
 
+	case queuesMsg:
+		m.queues = msg.queues
+		m.queuesErr = ""
+		m.queueCursor = 0
+		m.state = statusReady
+
+	case queuesErrMsg:
+		m.queuesErr = msg.err
+		m.queues = nil
+		m.state = statusReady
+
+	case messagesMsg:
+		m.messages = msg.messages
+		m.messagesErr = ""
+		m.msgCursor = 0
+		m.statusLine = ""
+		m.state = statusReady
+
+	case messagesErrMsg:
+		m.messagesErr = msg.err
+		m.messages = nil
+		m.statusLine = ""
+		m.state = statusReady
+
 	case resultMsg:
 		m.statusLine = msg.desc
 		if msg.refresh {
-			return m, func() tea.Msg { return fetchObjects(m.endpoint, m.currentBucket) }
+			switch m.mode {
+			case viewSSM:
+				return m, func() tea.Msg { return fetchParams(m.ctx, m.awsCfg, m.endpoint, "") }
+			case viewBuckets:
+				return m, func() tea.Msg { return fetchBuckets(m.ctx, m.awsCfg, m.endpoint) }
+			case viewQueueMessages:
+				return m, func() tea.Msg { return fetchMessages(m.ctx, m.awsCfg, m.endpoint, m.currentQueueURL) }
+			case viewObjects:
+				return m, func() tea.Msg { return fetchObjects(m.ctx, m.awsCfg, m.endpoint, m.currentBucket) }
+			case viewSQS:
+				return m, func() tea.Msg { return fetchQueues(m.ctx, m.awsCfg, m.endpoint) }
+			default:
+				return m, func() tea.Msg { return fetchQueues(m.ctx, m.awsCfg, m.endpoint) }
+			}
 		}
 
 	case actionMsg:
 		m.statusLine = msg.description
-		return m, tea.Batch(fetchContainerStatus, func() tea.Msg { return fetchBuckets(m.endpoint) })
+		return m, tea.Batch(
+			func() tea.Msg { return fetchContainerStatus(m.ctx, m.dockerCli) },
+			func() tea.Msg { return fetchCurrentView(m.ctx, m.awsCfg, m.endpoint, m.mode, m.currentBucket, m.currentQueueURL) },
+		)
 
 	case errMsg:
 		m.statusLine = fmt.Sprintf("Error: %v", msg.err)
@@ -342,371 +618,7 @@ func (m model) View() string {
 	if m.width == 0 {
 		m.width = 80
 	}
-	switch m.state {
-	case statusLoading:
-		return lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Padding(1).Render("Loading ministack info...")
-	case statusReady:
-		return m.dashboardView()
-	default:
-		return "unknown state"
-	}
-}
-
-func (m model) dashboardView() string {
-	var b strings.Builder
-
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("15")).
-		Background(lipgloss.Color("62")).
-		Width(m.width).
-		Align(lipgloss.Center).
-		Padding(0, 1)
-
-	sectionStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("15")).
-		Background(lipgloss.Color("33")).
-		Padding(0, 1)
-
-	b.WriteString(headerStyle.Render("☁  miniaws — ministack dashboard"))
-	b.WriteString("\n\n")
-
-	b.WriteString(sectionStyle.Render("Container"))
-	b.WriteString("\n")
-
-	statusColor := lipgloss.Color("10")
-	statusLabel := "● running"
-	if !strings.Contains(m.containerStatus, "running") {
-		statusColor = lipgloss.Color("11")
-		statusLabel = "● " + m.containerStatus
-	}
-	b.WriteString(fmt.Sprintf("  %s  ", lipgloss.NewStyle().Foreground(statusColor).Render(statusLabel)))
-	b.WriteString(fmt.Sprintf("(%s)\n\n", m.containerName))
-
-	if m.mode == viewSSM {
-		sectionLabel := "SSM Parameters"
-		if m.pageLabel != "" {
-			sectionLabel += "  " + m.pageLabel
-		}
-		b.WriteString(sectionStyle.Render(sectionLabel))
-		b.WriteString("\n")
-
-		if m.paramsErr != "" {
-			b.WriteString(fmt.Sprintf("  %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(m.paramsErr)))
-		} else if len(m.params) == 0 {
-			b.WriteString("  (empty)\n")
-		} else {
-			activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-			inactiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-			typeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-			for i, p := range m.params {
-				cursor := " "
-				style := inactiveStyle
-				if i == m.paramCursor {
-					cursor = "▸"
-					style = activeStyle
-				}
-				b.WriteString(fmt.Sprintf("  %s %s  %s\n", cursor, style.Render(p.Name), typeStyle.Render(fmt.Sprintf("(%s, v%d)", p.Type, p.Version))))
-			}
-		}
-		b.WriteString("\n")
-	} else if m.mode == viewObjects && m.currentBucket != "" {
-		b.WriteString(sectionStyle.Render("Objects — " + m.currentBucket))
-		b.WriteString("\n")
-
-		if m.objectsErr != "" {
-			b.WriteString(fmt.Sprintf("  %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(m.objectsErr)))
-		} else if len(m.objects) == 0 {
-			b.WriteString("  (empty)\n")
-		} else {
-			activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-			inactiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-			objKeyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-			folderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-			szStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-
-			for i, obj := range m.objects {
-				cursor := " "
-				style := inactiveStyle
-				if i == m.objCursor {
-					cursor = "▸"
-					style = activeStyle
-				}
-				icon := "📄"
-				keyStyle := objKeyStyle
-				if strings.HasSuffix(obj.Key, "/") {
-					icon = "📁"
-					keyStyle = folderStyle
-				}
-				line := fmt.Sprintf("  %s %s", cursor, style.Render(fmt.Sprintf("%s %s", icon, keyStyle.Render(obj.Key))))
-				if obj.Size > 0 && !strings.HasSuffix(obj.Key, "/") {
-					line += szStyle.Render(fmt.Sprintf("  (%d bytes)", obj.Size))
-				}
-				b.WriteString(line + "\n")
-			}
-		}
-		b.WriteString("\n")
-	} else {
-		b.WriteString(sectionStyle.Render("S3 Buckets"))
-		b.WriteString("\n")
-
-		if m.bucketsErr != "" {
-			b.WriteString(fmt.Sprintf("  %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(m.bucketsErr)))
-		} else if len(m.buckets) == 0 {
-			b.WriteString("  No buckets.\n")
-		} else {
-			activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-			inactiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-			for i, bucket := range m.buckets {
-				cursor := " "
-				style := inactiveStyle
-				if i == m.cursor {
-					cursor = "▸"
-					style = activeStyle
-				}
-				b.WriteString(fmt.Sprintf("  %s %s\n", cursor, style.Render(bucket)))
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	if m.mode == viewUpload {
-		b.WriteString(fmt.Sprintf("  Upload path: %s\n\n", m.uploadInput.View()))
-	}
-
-	if m.statusLine != "" {
-		statusLineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Italic(true)
-		b.WriteString(fmt.Sprintf("  %s\n\n", statusLineStyle.Render(m.statusLine)))
-	}
-
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	serviceBar := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render(" [1] S3  [2] SSM ")
-	b.WriteString(fmt.Sprintf("  %s\n\n", serviceBar))
-
-	help := "  ↑/↓ navigate"
-	if m.mode == viewBuckets {
-		help += " · enter browse · r refresh"
-	} else if m.mode == viewSSM {
-		help += " · enter value · del delete · [ ] page · r refresh"
-	} else if m.mode == viewObjects {
-		help += " · u upload · d download · del delete · esc back · r refresh"
-	} else if m.mode == viewUpload {
-		help += " · enter confirm · esc cancel"
-	}
-	if strings.Contains(m.containerStatus, "running") {
-		help += " · x stop"
-	} else if m.containerStatus != "not initialized" && m.containerStatus != "not found" {
-		help += " · s start"
-	}
-	help += " · q quit"
-	b.WriteString(helpStyle.Render(help))
-	b.WriteString("\n")
-
-	return b.String()
-}
-
-type containerStatusMsg struct {
-	status string
-	name   string
-}
-
-type bucketsMsg struct {
-	buckets []string
-}
-
-type bucketsErrMsg struct {
-	err string
-}
-
-type objectsMsg struct {
-	objects []s3ops.Object
-}
-
-type objectsErrMsg struct {
-	err string
-}
-
-type resultMsg struct {
-	desc    string
-	refresh bool
-}
-
-type actionMsg struct {
-	description string
-}
-
-type errMsg struct {
-	err error
-}
-
-type paramsMsg struct {
-	params       []ssmParam
-	requestToken string
-	nextToken    string
-	label        string
-}
-
-type paramsErrMsg struct {
-	err string
-}
-
-type paramValueMsg struct {
-	desc string
-}
-
-func fetchContainerStatus() tea.Msg {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return errMsg{err}
-	}
-
-	config, err := LoadConfig()
-	if err != nil {
-		return errMsg{err}
-	}
-	if config == nil {
-		return containerStatusMsg{status: "not initialized", name: "-"}
-	}
-
-	ci, err := cli.ContainerInspect(context.Background(), config.ContainerName)
-	if err != nil {
-		return containerStatusMsg{status: "not found", name: config.ContainerName}
-	}
-
-	return containerStatusMsg{status: ci.State.Status, name: config.ContainerName}
-}
-
-func startContainer() tea.Msg {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return actionMsg{description: fmt.Sprintf("Failed to connect: %v", err)}
-	}
-	config, err := LoadConfig()
-	if err != nil {
-		return actionMsg{description: fmt.Sprintf("Failed to load config: %v", err)}
-	}
-	if config == nil {
-		return actionMsg{description: "Not initialized — run 'miniaws init' first"}
-	}
-	if err := cli.ContainerStart(context.Background(), config.ContainerName, container.StartOptions{}); err != nil {
-		return actionMsg{description: fmt.Sprintf("Failed to start: %v", err)}
-	}
-	return actionMsg{description: fmt.Sprintf("Container '%s' started", config.ContainerName)}
-}
-
-func stopContainer() tea.Msg {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return actionMsg{description: fmt.Sprintf("Failed to connect: %v", err)}
-	}
-	config, err := LoadConfig()
-	if err != nil {
-		return actionMsg{description: fmt.Sprintf("Failed to load config: %v", err)}
-	}
-	if config == nil {
-		return actionMsg{description: "Not initialized"}
-	}
-	if err := cli.ContainerStop(context.Background(), config.ContainerName, container.StopOptions{}); err != nil {
-		return actionMsg{description: fmt.Sprintf("Failed to stop: %v", err)}
-	}
-	return actionMsg{description: fmt.Sprintf("Container '%s' stopped", config.ContainerName)}
-}
-
-func fetchBuckets(endpoint string) tea.Msg {
-	client := awsclient.NewS3Client(awsclient.NewConfig(), endpoint)
-	names, err := s3ops.ListBuckets(context.Background(), client)
-	if err != nil {
-		if s3ops.IsConnectionErr(err) {
-			return bucketsErrMsg{err: "Cannot reach ministack — is the container running?"}
-		}
-		return bucketsErrMsg{err: fmt.Sprintf("S3 error: %v", err)}
-	}
-	return bucketsMsg{buckets: names}
-}
-
-func fetchObjects(endpoint, bucket string) tea.Msg {
-	client := awsclient.NewS3Client(awsclient.NewConfig(), endpoint)
-	items, err := s3ops.ListObjects(context.Background(), client, bucket)
-	if err != nil {
-		if s3ops.IsConnectionErr(err) {
-			return objectsErrMsg{err: "Cannot reach ministack — is the container running?"}
-		}
-		return objectsErrMsg{err: fmt.Sprintf("S3 error: %v", err)}
-	}
-	return objectsMsg{objects: items}
-}
-
-func doUpload(endpoint, bucket, localPath string) tea.Msg {
-	client := awsclient.NewS3Client(awsclient.NewConfig(), endpoint)
-	key := filepath.Base(localPath)
-	if err := s3ops.UploadFile(context.Background(), client, bucket, key, localPath); err != nil {
-		return resultMsg{desc: fmt.Sprintf("Upload failed: %v", err)}
-	}
-	return resultMsg{desc: fmt.Sprintf("Uploaded %s → s3://%s/%s", localPath, bucket, key), refresh: true}
-}
-
-func doDownload(endpoint, bucket, key string) tea.Msg {
-	client := awsclient.NewS3Client(awsclient.NewConfig(), endpoint)
-	written, err := s3ops.DownloadFile(context.Background(), client, bucket, key, ".")
-	if err != nil {
-		return resultMsg{desc: fmt.Sprintf("Download failed: %v", err)}
-	}
-	localName := filepath.Base(key)
-	return resultMsg{desc: fmt.Sprintf("Downloaded s3://%s/%s → %s (%d bytes)", bucket, key, localName, written)}
-}
-
-func doDelete(endpoint, bucket, key string) tea.Msg {
-	client := awsclient.NewS3Client(awsclient.NewConfig(), endpoint)
-	if err := s3ops.DeleteObject(context.Background(), client, bucket, key); err != nil {
-		return resultMsg{desc: fmt.Sprintf("Delete failed: %v", err)}
-	}
-	return resultMsg{desc: fmt.Sprintf("Deleted s3://%s/%s", bucket, key), refresh: true}
-}
-
-func fetchParams(endpoint, requestToken string) tea.Msg {
-	client := awsclient.NewSSMClient(awsclient.NewConfig(), endpoint)
-	var tok *string
-	if requestToken != "" {
-		tok = &requestToken
-	}
-	page, err := ssmops.ListParameters(context.Background(), client, tok, 20)
-	if err != nil {
-		if ssmops.IsConnectionErr(err) {
-			return paramsErrMsg{err: "Cannot reach ministack — is the container running?"}
-		}
-		return paramsErrMsg{err: fmt.Sprintf("SSM error: %v", err)}
-	}
-	params := make([]ssmParam, len(page.Parameters))
-	for i, p := range page.Parameters {
-		params[i] = ssmParam{Name: p.Name, Type: p.Type, Version: p.Version}
-	}
-	var nt string
-	if page.NextToken != nil {
-		nt = *page.NextToken
-	}
-	label := fmt.Sprintf("(%d)", len(params))
-	if nt != "" {
-		label += " [ more ]"
-	}
-	return paramsMsg{params: params, requestToken: requestToken, nextToken: nt, label: label}
-}
-
-func fetchParamValue(endpoint, name string) tea.Msg {
-	client := awsclient.NewSSMClient(awsclient.NewConfig(), endpoint)
-	p, err := ssmops.GetParameter(context.Background(), client, name)
-	if err != nil {
-		return paramValueMsg{desc: fmt.Sprintf("Get failed: %v", err)}
-	}
-	return paramValueMsg{desc: fmt.Sprintf("%s = %s  (%s, v%d)", p.Name, p.Value, p.Type, p.Version)}
-}
-
-func doDeleteParam(endpoint, name string) tea.Msg {
-	client := awsclient.NewSSMClient(awsclient.NewConfig(), endpoint)
-	if err := ssmops.DeleteParameter(context.Background(), client, name); err != nil {
-		return resultMsg{desc: fmt.Sprintf("Delete failed: %v", err)}
-	}
-	return resultMsg{desc: fmt.Sprintf("Deleted parameter '%s'", name), refresh: true}
+	return m.dashboardView()
 }
 
 func init() {

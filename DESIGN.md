@@ -15,13 +15,19 @@ miniaws/
     ├── init.go           # `miniaws init` — ensure container exists/running, prompt setup
     ├── config.go         # Load/Save Config to ~/.miniaws/config.json
     ├── container_cmd.go  # `miniaws container` subcommands: status, start, stop, remove
-    ├── browse.go         # `miniaws browse` — interactive TUI dashboard (S3)
+    ├── browse.go         # `miniaws browse` — model, Init/Update/View, key handling
+    ├── browse_view.go    # TUI dashboard rendering (dashboardView)
+    ├── browse_messages.go# Bubble Tea message types
+    ├── browse_containers.go # Docker container operations for TUI
+    ├── browse_s3.go      # S3 operations for TUI
+    ├── browse_ssm.go     # SSM operations for TUI
+    ├── browse_sqs.go     # SQS operations + fetchCurrentView + ExtractQueueName
     ├── s3_cmd.go         # `miniaws s3` subcommands: ls, mb, rb, cp
     ├── ssm_cmd.go        # `miniaws ssm` subcommands: ls, get, put, rm
     ├── sqs_cmd.go        # `miniaws sqs` subcommands: ls, create, rm, send, recv
     └── internal/
         ├── awsclient/
-        │   └── awsclient.go  # Shared AWS config + service client factories
+        │   └── awsclient.go  # Shared AWS config + service client factories + IsConnectionErr/FriendlyErr
         ├── s3ops/
         │   └── s3ops.go      # S3 operations (100% test coverage)
         ├── ssmops/
@@ -121,31 +127,53 @@ All commands load config first. If no config → print "Not initialized. Run 'mi
 - Config is stored under `~/.miniaws/config.json`.
 - Docker API: `container.StartOptions{}`, `image.PullOptions{}`, `container.InspectResponse`.
 - AWS SDK v2: clients created via `awsclient` factories with dummy credentials.
-- Each service package has `IsConnectionErr` and `friendlyErr` helpers for consistent error messages.
+- Shared `IsConnectionErr` and `FriendlyErr` helpers in `internal/awsclient/` are used by all service packages, eliminating duplication.
 
-### Browse TUI (`cmd/browse.go`)
+### Browse TUI (`cmd/browse*.go`)
+
+The browse TUI is split across 7 files in `package cmd`:
+
+| File | Role |
+|------|------|
+| `browse.go` | Model struct, `Init`/`Update`/`View`, key handling, `init()` |
+| `browse_view.go` | `dashboardView()` rendering with lipgloss |
+| `browse_messages.go` | All `tea.Msg` type definitions |
+| `browse_containers.go` | Docker container fetch/start/stop |
+| `browse_s3.go` | S3 bucket/object fetch/upload/download/delete |
+| `browse_ssm.go` | SSM parameter list/get/delete |
+| `browse_sqs.go` | SQS queue/message ops + `fetchCurrentView` + `ExtractQueueName` |
 
 - Full-screen Bubble Tea app with alt screen
-- **Service switcher** at top — press `[1]` for S3, `[2]` for SSM
+- **Service switcher** at top — press `[1]` for S3, `[2]` for SSM, `[3]` for SQS
 - Dashboard sections: container status, then active service panel
+- Docker client and `aws.Config` are created once in `initialModel` and cached in the `model` struct, reused across all TUI operations
+- A cancellable `context.Context` is created at startup and cancelled on quit, ensuring in-flight operations are cancelled when the TUI exits
+- Stale data remains visible during refresh — the view always shows the dashboard; a "⟳ refreshing..." indicator appears in the header instead of blanking the screen
 
 **S3 mode:**
 - Bucket list (default) → `enter` to browse objects
-- Object view: `u` upload, `d` download, `del` delete, `esc` back
+- Object view: `u` upload, `d` download, `del` delete (with confirmation), `esc` back
 
 **SSM mode:**
 - Parameter list, loaded one page at a time (20 items per page)
 - `[` / `←` previous page, `]` / `→` next page
 - `enter` fetches and displays the parameter value in the status line
-- `del` / `backspace` deletes the selected parameter
+- `del` / `backspace` deletes the selected parameter (with confirmation prompt)
+
+**SQS mode:**
+- Queue list → `enter` to browse messages
+- `c` to create a new queue (with text input prompt)
+- Message view: message body (truncated), `s` send message, `del` delete (with confirmation), `esc` back
+- `enter` on a message shows its full body in the status line
 
 **General keybindings:**
   - `↑`/`k` `↓`/`j` — navigate current list
   - `r` — refresh all data
-  - `s` — start container (when not running)
-  - `x` — stop container (when running)
+  - `s` — start container (when not running) / send message (in SQS message view)
+  - `x` — stop container (when running, requires `y` confirmation)
   - `q` / `ctrl+c` — quit
   - `esc` — go back / quit
+- Destructive actions (delete object, delete parameter, delete queue, delete message, stop container) prompt for `y`/`N` confirmation before executing
 - Action feedback displayed below section; dashboard auto-refreshes after action
 
 ## Visual Design
@@ -162,7 +190,7 @@ Output is styled with [lipgloss](https://github.com/charmbracelet/lipgloss):
 
 | Package | Tests | Coverage |
 |---------|-------|----------|
-| `internal/awsclient/` | 8 | Config, credentials, retryer, 3 client factories |
+| `internal/awsclient/` | 8 + shared err helpers | Config, credentials, retryer, 3 client factories, `IsConnectionErr`, `FriendlyErr` |
 | `internal/s3ops/` | 28 | **100%** — S3 CRUD, error handling, pagination |
-| `internal/ssmops/` | 20 | **100%** — SSM CRUD, pagination, error handling |
+| `internal/ssmops/` | 16 | **100%** — SSM CRUD, pagination, error handling |
 | `internal/sqsops/` | 0 | TBD |

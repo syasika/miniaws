@@ -134,7 +134,7 @@ func TestListObjects(t *testing.T) {
 			</ListBucketResult>`))
 	})
 
-	objects, err := ListObjects(context.Background(), client, "test-bucket")
+	objects, err := ListObjects(context.Background(), client, "test-bucket", "")
 	if err != nil {
 		t.Fatalf("ListObjects: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestListObjectsWithCommonPrefixes(t *testing.T) {
 			</ListBucketResult>`))
 	})
 
-	objects, err := ListObjects(context.Background(), client, "test-bucket")
+	objects, err := ListObjects(context.Background(), client, "test-bucket", "")
 	if err != nil {
 		t.Fatalf("ListObjects: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestListObjectsEmpty(t *testing.T) {
 			</ListBucketResult>`))
 	})
 
-	objects, err := ListObjects(context.Background(), client, "test-bucket")
+	objects, err := ListObjects(context.Background(), client, "test-bucket", "")
 	if err != nil {
 		t.Fatalf("ListObjects: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestListObjectsReturnsFriendlyError(t *testing.T) {
 			<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`)
 	})
 
-	_, err := ListObjects(context.Background(), client, "test-bucket")
+	_, err := ListObjects(context.Background(), client, "test-bucket", "")
 	if err == nil {
 		t.Fatal("expected error from server")
 	}

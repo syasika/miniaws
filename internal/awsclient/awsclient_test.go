@@ -1,6 +1,7 @@
 package awsclient
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,7 +21,7 @@ func TestNewConfigCredentials(t *testing.T) {
 		t.Fatal("Credentials provider is nil")
 	}
 
-	creds, err := cfg.Credentials.Retrieve(nil)
+	creds, err := cfg.Credentials.Retrieve(context.Background())
 	if err != nil {
 		t.Fatalf("Retrieve credentials: %v", err)
 	}

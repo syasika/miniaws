@@ -79,7 +79,7 @@ With a bucket or s3://bucket argument, list objects.`,
 			prefix = parts[1]
 		}
 
-		objects, err := s3ops.ListObjects(ctx, client, bucketName)
+		objects, err := s3ops.ListObjects(ctx, client, bucketName, prefix)
 		if err != nil {
 			return err
 		}

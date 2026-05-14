@@ -2,13 +2,13 @@ package ssmops
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
+
+	"github.com/syasika/miniaws/internal/awsclient"
 )
 
 type Parameter struct {
@@ -25,36 +25,11 @@ type Page struct {
 }
 
 func IsConnectionErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "no such host") ||
-		strings.Contains(errStr, "i/o timeout") ||
-		strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "dial tcp")
+	return awsclient.IsConnectionErr(err)
 }
 
 func useFriendlyErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if IsConnectionErr(err) {
-		return fmt.Errorf("cannot reach ministack — is the container running?")
-	}
-	return friendlyErr(err)
-}
-
-func friendlyErr(err error) error {
-	errStr := err.Error()
-	if strings.Contains(errStr, "api error ") {
-		parts := strings.SplitN(errStr, "api error ", 2)
-		if len(parts) == 2 {
-			return fmt.Errorf("SSM API error: %s", strings.ToLower(strings.TrimSpace(parts[1])))
-		}
-	}
-	return err
+	return awsclient.FriendlyErr(err, "SSM")
 }
 
 func ListAllParameters(ctx context.Context, client *ssm.Client) ([]Parameter, error) {

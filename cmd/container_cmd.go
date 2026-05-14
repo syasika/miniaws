@@ -123,7 +123,10 @@ var containerRemoveCmd = &cobra.Command{
 			return fmt.Errorf("failed to remove container: %w", err)
 		}
 
-		path, _ := configFilePath()
+		path, err := configFilePath()
+		if err != nil {
+			return fmt.Errorf("failed to get config path: %w", err)
+		}
 		os.Remove(path)
 
 		fmt.Printf("%s Container '%s' removed\n", containerSuccess.Render("✓"), config.ContainerName)

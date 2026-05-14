@@ -2,11 +2,12 @@ package sqsops
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+
+	"github.com/syasika/miniaws/internal/awsclient"
 )
 
 type Queue struct {
@@ -21,32 +22,11 @@ type Message struct {
 }
 
 func IsConnectionErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "no such host") ||
-		strings.Contains(errStr, "i/o timeout") ||
-		strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "dial tcp")
+	return awsclient.IsConnectionErr(err)
 }
 
 func friendlyErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if IsConnectionErr(err) {
-		return fmt.Errorf("cannot reach ministack — is the container running?")
-	}
-	errStr := err.Error()
-	if strings.Contains(errStr, "api error ") {
-		parts := strings.SplitN(errStr, "api error ", 2)
-		if len(parts) == 2 {
-			return fmt.Errorf("SQS API error: %s", strings.ToLower(strings.TrimSpace(parts[1])))
-		}
-	}
-	return err
+	return awsclient.FriendlyErr(err, "SQS")
 }
 
 func ListQueues(ctx context.Context, client *sqs.Client) ([]Queue, error) {
@@ -60,7 +40,7 @@ func ListQueues(ctx context.Context, client *sqs.Client) ([]Queue, error) {
 		for _, url := range page.QueueUrls {
 			queues = append(queues, Queue{
 				URL:  url,
-				Name: extractQueueName(url),
+				Name: ExtractQueueName(url),
 			})
 		}
 	}
@@ -123,7 +103,7 @@ func DeleteMessage(ctx context.Context, client *sqs.Client, queueURL, receiptHan
 	return friendlyErr(err)
 }
 
-func extractQueueName(queueURL string) string {
+func ExtractQueueName(queueURL string) string {
 	parts := strings.Split(queueURL, "/")
 	return parts[len(parts)-1]
 }
