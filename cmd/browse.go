@@ -257,6 +257,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.messagesErr = ""
 				m.statusLine = ""
 			default:
+				m.cancel()
 				return m, tea.Quit
 			}
 			return m, nil
@@ -451,6 +452,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "r":
 			m.state = statusLoading
+			m.cursor = 0
+			m.objCursor = 0
+			m.paramCursor = 0
+			m.queueCursor = 0
+			m.msgCursor = 0
 			switch m.mode {
 			case viewSSM:
 				m.nextToken = ""
@@ -531,6 +537,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case paramsErrMsg:
 		m.paramsErr = msg.err
 		m.params = nil
+		m.pageLabel = ""
 		m.state = statusReady
 
 	case paramValueMsg:

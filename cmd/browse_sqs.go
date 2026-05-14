@@ -15,8 +15,12 @@ func fetchCurrentView(ctx context.Context, cfg aws.Config, endpoint string, mode
 	switch mode {
 	case viewSSM:
 		return fetchParams(ctx, cfg, endpoint, "")
-	case viewSQS, viewQueueMessages:
+	case viewSQS:
 		return fetchQueues(ctx, cfg, endpoint)
+	case viewQueueMessages:
+		return fetchMessages(ctx, cfg, endpoint, queueURL)
+	case viewObjects:
+		return fetchObjects(ctx, cfg, endpoint, bucket)
 	default:
 		return fetchBuckets(ctx, cfg, endpoint)
 	}

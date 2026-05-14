@@ -26,7 +26,7 @@ func fetchBuckets(ctx context.Context, cfg aws.Config, endpoint string) tea.Msg 
 
 func fetchObjects(ctx context.Context, cfg aws.Config, endpoint, bucket string) tea.Msg {
 	client := awsclient.NewS3Client(cfg, endpoint)
-	items, err := s3ops.ListObjects(ctx, client, bucket)
+	items, err := s3ops.ListObjects(ctx, client, bucket, "")
 	if err != nil {
 		if s3ops.IsConnectionErr(err) {
 			return objectsErrMsg{err: "Cannot reach ministack — is the container running?"}

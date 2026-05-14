@@ -36,8 +36,11 @@ func writeErr(w http.ResponseWriter, code, msg string) {
 }
 
 func readBody(r *http.Request) string {
-	data, _ := io.ReadAll(r.Body)
+	data, err := io.ReadAll(r.Body)
 	r.Body.Close()
+	if err != nil {
+		return ""
+	}
 	return string(data)
 }
 

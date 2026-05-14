@@ -39,9 +39,10 @@ func ListBuckets(ctx context.Context, client *s3.Client) ([]string, error) {
 	return names, nil
 }
 
-func ListObjects(ctx context.Context, client *s3.Client, bucket string) ([]Object, error) {
+func ListObjects(ctx context.Context, client *s3.Client, bucket, prefix string) ([]Object, error) {
 	resp, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
 	})
 	if err != nil {
 		return nil, ConnectionFriendlyErr(err)
@@ -79,7 +80,7 @@ func EmptyBucket(ctx context.Context, client *s3.Client, bucket string) error {
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return err
+			return ConnectionFriendlyErr(err)
 		}
 		if len(page.Contents) == 0 {
 			continue
@@ -88,11 +89,15 @@ func EmptyBucket(ctx context.Context, client *s3.Client, bucket string) error {
 		for i, obj := range page.Contents {
 			oids[i] = types.ObjectIdentifier{Key: obj.Key}
 		}
-		if _, err := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		resp, err := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(bucket),
 			Delete: &types.Delete{Objects: oids},
-		}); err != nil {
-			return err
+		})
+		if err != nil {
+			return ConnectionFriendlyErr(err)
+		}
+		if len(resp.Errors) > 0 {
+			return fmt.Errorf("failed to delete %d object(s) from bucket %s", len(resp.Errors), bucket)
 		}
 	}
 	return nil
@@ -113,7 +118,7 @@ func UploadFile(ctx context.Context, client *s3.Client, bucket, key, localPath s
 	return ConnectionFriendlyErr(err)
 }
 
-func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath string) (int64, error) {
+func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath string) (written int64, err error) {
 	resp, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -131,9 +136,16 @@ func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath
 	if err != nil {
 		return 0, fmt.Errorf("failed to create %s: %w", localPath, err)
 	}
-	defer out.Close()
 
-	return io.Copy(out, resp.Body)
+	written, err = io.Copy(out, resp.Body)
+	if cerr := out.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(localPath)
+		return 0, err
+	}
+	return written, nil
 }
 
 func DeleteObject(ctx context.Context, client *s3.Client, bucket, key string) error {
