@@ -87,6 +87,28 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPermissionError(t *testing.T) {
+	setupTestHome(t)
+
+	// Create config file, then make it unreadable
+	cfg := &Config{ContainerName: "noread"}
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	home := os.Getenv("HOME")
+	cfgPath := filepath.Join(home, ".miniaws", "config.json")
+	if err := os.Chmod(cfgPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(cfgPath, 0o644) })
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("LoadConfig() expected permission error, got nil")
+	}
+}
+
 func TestRemoveConfig(t *testing.T) {
 	setupTestHome(t)
 
@@ -116,12 +138,12 @@ func TestRemoveConfig(t *testing.T) {
 	}
 }
 
-func TestRemoveConfigNoFile(t *testing.T) {
+func TestRemoveConfigNoDirectory(t *testing.T) {
 	setupTestHome(t)
 
-	// RemoveConfig when file doesn't exist should return nil (os.Remove is a no-op)
+	// No .miniaws directory exists at all — should be a no-op
 	if err := RemoveConfig(); err != nil {
-		t.Fatalf("RemoveConfig() on missing file error: %v", err)
+		t.Fatalf("RemoveConfig() on missing dir error: %v", err)
 	}
 }
 
@@ -148,4 +170,50 @@ func TestSaveConfigRoundTripEmptyFields(t *testing.T) {
 	}
 }
 
+func TestSaveConfigMkdirError(t *testing.T) {
+	setupTestHome(t)
 
+	// Create a file where .miniaws directory should be, so MkdirAll fails
+	home := os.Getenv("HOME")
+	blocker := filepath.Join(home, ".miniaws")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := SaveConfig(&Config{ContainerName: "x"})
+	if err == nil {
+		t.Fatal("SaveConfig() expected MkdirAll error, got nil")
+	}
+}
+
+func TestRemoveConfigMkdirError(t *testing.T) {
+	setupTestHome(t)
+
+	// Create a file where .miniaws directory should be, so MkdirAll fails
+	home := os.Getenv("HOME")
+	blocker := filepath.Join(home, ".miniaws")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RemoveConfig()
+	if err == nil {
+		t.Fatal("RemoveConfig() expected MkdirAll error, got nil")
+	}
+}
+
+func TestLoadConfigMkdirError(t *testing.T) {
+	setupTestHome(t)
+
+	// Create a file where .miniaws directory should be, so MkdirAll fails
+	home := os.Getenv("HOME")
+	blocker := filepath.Join(home, ".miniaws")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("LoadConfig() expected MkdirAll error, got nil")
+	}
+}
