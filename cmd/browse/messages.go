@@ -1,4 +1,4 @@
-package cmd
+package browse
 
 import (
 	"github.com/syasika/miniaws/internal/s3ops"
