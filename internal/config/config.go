@@ -61,11 +61,14 @@ func SaveConfig(c *Config) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// RemoveConfig deletes the config file.
+// RemoveConfig deletes the config file. Returns nil if the file doesn't exist.
 func RemoveConfig() error {
 	path, err := configFilePath()
 	if err != nil {
 		return err
 	}
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
