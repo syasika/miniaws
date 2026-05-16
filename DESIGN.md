@@ -10,30 +10,36 @@ miniaws/
 ├── go.mod / go.sum       # Deps: cobra, docker client, aws-sdk-go-v2
 ├── DESIGN.md             # This file
 ├── README.md             # GitHub readme
-└── cmd/
-    ├── root.go           # Cobra root command; registers subcommands, global flags
-    ├── init.go           # `miniaws init` — ensure container exists/running, prompt setup
-    ├── config.go         # Load/Save Config to ~/.miniaws/config.json
-    ├── container_cmd.go  # `miniaws container` subcommands: status, start, stop, remove
-    ├── browse.go         # `miniaws browse` — model, Init/Update/View, key handling
-    ├── browse_view.go    # TUI dashboard rendering (dashboardView)
-    ├── browse_messages.go# Bubble Tea message types
-    ├── browse_containers.go # Docker container operations for TUI
-    ├── browse_s3.go      # S3 operations for TUI
-    ├── browse_ssm.go     # SSM operations for TUI
-    ├── browse_sqs.go     # SQS operations + fetchCurrentView + ExtractQueueName
-    ├── s3_cmd.go         # `miniaws s3` subcommands: ls, mb, rb, cp
-    ├── ssm_cmd.go        # `miniaws ssm` subcommands: ls, get, put, rm
-    ├── sqs_cmd.go        # `miniaws sqs` subcommands: ls, create, rm, send, recv
-    └── internal/
-        ├── awsclient/
-        │   └── awsclient.go  # Shared AWS config + service client factories + IsConnectionErr/FriendlyErr
-        ├── s3ops/
-        │   └── s3ops.go      # S3 operations (100% test coverage)
-        ├── ssmops/
-        │   └── ssmops.go     # SSM Parameter Store operations
-        └── sqsops/
-            └── sqsops.go     # SQS operations
+├── cmd/
+│   ├── root.go           # Cobra root command; registers subcommands, global flags
+│   ├── init.go           # `miniaws init` — ensure container exists/running, prompt setup
+│   ├── s3/
+│   │   └── cmd.go        # `miniaws s3` subcommands: ls, mb, rb, cp
+│   ├── sqs/
+│   │   └── cmd.go        # `miniaws sqs` subcommands: ls, create, rm, send, recv
+│   ├── ssm/
+│   │   └── cmd.go        # `miniaws ssm` subcommands: ls, get, put, rm
+│   ├── container/
+│   │   └── cmd.go        # `miniaws container` subcommands: status, start, stop, remove
+│   └── browse/
+│       ├── browse.go     # `miniaws browse` — model, Init/Update/View, key handling
+│       ├── view.go       # TUI dashboard rendering (dashboardView)
+│       ├── messages.go   # Bubble Tea message types
+│       ├── container.go  # Docker container operations for TUI
+│       ├── s3.go         # S3 operations for TUI
+│       ├── ssm.go        # SSM operations for TUI
+│       └── sqs.go        # SQS operations + fetchCurrentView
+└── internal/
+    ├── config/
+    │   └── config.go     # Shared Config struct, LoadConfig/SaveConfig/RemoveConfig
+    ├── awsclient/
+    │   └── awsclient.go  # Shared AWS config + service client factories + IsConnectionErr/FriendlyErr
+    ├── s3ops/
+    │   └── s3ops.go      # S3 operations (100% statement coverage)
+    ├── ssmops/
+    │   └── ssmops.go     # SSM Parameter Store operations (100% statement coverage)
+    └── sqsops/
+        └── sqsops.go     # SQS operations (100% statement coverage)
 ```
 
 ## Commands
@@ -41,7 +47,7 @@ miniaws/
 | CLI invocation                    | What it does                                              |
 |-----------------------------------|-----------------------------------------------------------|
 | `miniaws init`                    | Check container; if missing/stopped, prompt + create/start |
-| `miniaws browse`                  | Interactive TUI dashboard (container + S3 buckets)        |
+| `miniaws browse`                  | Interactive TUI dashboard (container + S3 + SSM + SQS)    |
 | `miniaws s3 ls`                   | List all S3 buckets                                       |
 | `miniaws s3 ls <bucket/prefix>`   | List objects in a bucket                                  |
 | `miniaws s3 mb <bucket>`          | Create an S3 bucket                                       |
@@ -75,17 +81,24 @@ All non-Docker commands work offline. Docker commands gracefully report when not
 
 ### Init (`cmd/init.go`)
 1. Connect to Docker daemon (`client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())`)
-2. Load config from `~/.miniaws/config.json`
+2. Load config from `~/.miniaws/config.json` via `internal/config.LoadConfig()`
 3. If config exists → inspect container by name
    - Running → print message, exit
    - Exited → start it, exit
+   - Paused → unpause it, exit
    - Not found → fall through to setup
-4. If no config → prompt user: container name, image, endpoint URL
+4. If no config → prompt user: container name, image
 5. Call `ensureContainer`:
    - Inspect container → if exists start
    - If not found → `ImagePull` then `ContainerCreate` then `ContainerStart`
    - If pull fails → print warning, prompt for different image name, retry
-6. Save config
+6. Save config via `internal/config.SaveConfig()`
+
+### Config (`internal/config/config.go`)
+- `Config` struct: `ContainerName`, `ImageName`, `Port`, `EndpointURL`
+- `LoadConfig()` — reads and deserializes `~/.miniaws/config.json`
+- `SaveConfig(cfg)` — serializes and writes config file
+- `RemoveConfig()` — deletes config file on container remove
 
 ### Shared AWS config + client factories (`internal/awsclient/awsclient.go`)
 
@@ -111,40 +124,44 @@ Two pagination strategies:
 - **CLI commands** use `ListAllParameters` / S3 paginators / SQS paginators — all pages collected into a single result slice.
 - **TUI** (SSM only) uses `ListParameters` with a page size of 20. The model tracks `requestToken`, `nextToken`, and a `prevTokens` stack for forward/backward page navigation via `[` / `]` keys.
 
-### Container management (`cmd/container_cmd.go`)
+### Container management (`cmd/container/cmd.go`)
 All commands load config first. If no config → print "Not initialized. Run 'miniaws init' first."
 - `status`: inspect container, print name/image/state
 - `start`: `ContainerStart` (fails if container doesn't exist)
 - `stop`: `ContainerStop`
-- `remove`: `ContainerRemove` then delete config file; supports `--force`
+- `remove`: `ContainerRemove` (supports `--force`), then `config.RemoveConfig()`
 
-## Conventions
+The exported function `InspectContainer(ctx, cli, name)` is shared with `cmd/init.go` for checking container state during initialization.
 
-- All source files in `cmd/` are in `package cmd` (flat package).
-- Errors bubble up via `RunE` returning them; Cobra prints the error.
-- User-facing output uses `fmt.Print` directly (no logger).
-- Variables shadowing package names are avoided — use `ci`, `resp`, etc.
-- Config is stored under `~/.miniaws/config.json`.
-- Docker API: `container.StartOptions{}`, `image.PullOptions{}`, `container.InspectResponse`.
-- AWS SDK v2: clients created via `awsclient` factories with dummy credentials.
-- Shared `IsConnectionErr` and `FriendlyErr` helpers in `internal/awsclient/` are used by all service packages, eliminating duplication.
+### Sub-command packages (`cmd/s3/`, `cmd/sqs/`, `cmd/ssm/`, `cmd/container/`)
 
-### Browse TUI (`cmd/browse*.go`)
+Each is a standalone `package` (e.g. `package s3`) with an exported `Cmd() *cobra.Command` constructor. They are wired into `cmd/root.go` via:
 
-The browse TUI is split across 7 files in `package cmd`:
+```go
+rootCmd.AddCommand(s3.Cmd())
+rootCmd.AddCommand(sqs.Cmd())
+rootCmd.AddCommand(ssm.Cmd())
+rootCmd.AddCommand(container.Cmd())
+```
+
+Service-specific style variables (lipgloss styles) are duplicated per sub-package rather than shared — each has 3–5 lines for label/value/success/warn/error styles.
+
+### Browse TUI (`cmd/browse/`)
+
+The browse TUI is in `package browse` (7 files):
 
 | File | Role |
 |------|------|
-| `browse.go` | Model struct, `Init`/`Update`/`View`, key handling, `init()` |
-| `browse_view.go` | `dashboardView()` rendering with lipgloss |
-| `browse_messages.go` | All `tea.Msg` type definitions |
-| `browse_containers.go` | Docker container fetch/start/stop |
-| `browse_s3.go` | S3 bucket/object fetch/upload/download/delete |
-| `browse_ssm.go` | SSM parameter list/get/delete |
-| `browse_sqs.go` | SQS queue/message ops + `fetchCurrentView` + `ExtractQueueName` |
+| `browse.go` | Model struct, `Cmd()` constructor, `Init`/`Update`/`View`, key handling |
+| `view.go` | `dashboardView()` rendering with lipgloss |
+| `messages.go` | All `tea.Msg` type definitions |
+| `container.go` | Docker container fetch/start/stop |
+| `s3.go` | S3 bucket/object fetch/upload/download/delete |
+| `ssm.go` | SSM parameter list/get/delete |
+| `sqs.go` | SQS queue/message ops + `fetchCurrentView` — dispatches fetch to the correct service based on view mode |
 
 - Full-screen Bubble Tea app with alt screen
-- **Service switcher** at top — press `[1]` for S3, `[2]` for SSM, `[3]` for SQS
+- **Service switcher** — press `[1]` for S3, `[2]` for SSM, `[3]` for SQS
 - Dashboard sections: container status, then active service panel
 - Docker client and `aws.Config` are created once in `initialModel` and cached in the `model` struct, reused across all TUI operations
 - A cancellable `context.Context` is created at startup and cancelled on quit, ensuring in-flight operations are cancelled when the TUI exits
@@ -193,4 +210,4 @@ Output is styled with [lipgloss](https://github.com/charmbracelet/lipgloss):
 | `internal/awsclient/` | 8 + shared err helpers | Config, credentials, retryer, 3 client factories, `IsConnectionErr`, `FriendlyErr` |
 | `internal/s3ops/` | 28 | **100%** — S3 CRUD, error handling, pagination |
 | `internal/ssmops/` | 16 | **100%** — SSM CRUD, pagination, error handling |
-| `internal/sqsops/` | 0 | TBD |
+| `internal/sqsops/` | 28 | **100%** — SQS CRUD, pagination, error handling |
