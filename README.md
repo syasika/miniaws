@@ -67,7 +67,7 @@ miniaws container remove
 | Command                         | Description                                |
 |---------------------------------|--------------------------------------------|
 | `miniaws init`                  | Ensure container exists; prompt if needed  |
-| `miniaws browse`                | Interactive TUI dashboard (S3 + SSM)       |
+| `miniaws browse`                | Interactive TUI dashboard (S3, SSM, SQS)    |
 | `miniaws s3 ls [bucket]`        | List buckets or objects                    |
 | `miniaws s3 mb <bucket>`        | Create an S3 bucket                        |
 | `miniaws s3 rb <bucket>`        | Remove an S3 bucket                        |
@@ -95,9 +95,7 @@ Global flags:
 
 ## Browse TUI
 
-Launch with `miniaws browse`. The dashboard shows the container status at the top, then the active service panel.
-
-**Service switcher** — press `[1]` for S3, `[2]` for SSM Parameter Store, `[3]` for SQS.
+Launch with `miniaws browse`. Dashboard header shows service tabs: `[1] S3  [2] SSM  [3] SQS`. Press the number key to switch.
 
 Destructive actions (delete object, delete parameter, delete queue, delete message, stop container) prompt for `y`/`N` confirmation before executing.
 

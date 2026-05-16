@@ -361,6 +361,34 @@ func TestDownloadFileCreateFails(t *testing.T) {
 	}
 }
 
+func TestDownloadFileBodyReadError(t *testing.T) {
+	client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Write partial data then hijack and close to trigger a read error
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("partial"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		if h, ok := w.(http.Hijacker); ok {
+			conn, _, _ := h.Hijack()
+			conn.Close()
+		}
+	})
+
+	tmpDir := t.TempDir()
+	dest := filepath.Join(tmpDir, "out.txt")
+
+	_, err := DownloadFile(context.Background(), client, "bucket", "key.txt", dest)
+	if err == nil {
+		t.Fatal("expected error from broken body read")
+	}
+
+	// Verify the partial file was cleaned up
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Errorf("partial file should have been removed after error, stat err = %v", statErr)
+	}
+}
+
 func TestEmptyBucketEmpty(t *testing.T) {
 	client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
@@ -489,6 +517,48 @@ func TestEmptyBucketListError(t *testing.T) {
 	err := EmptyBucket(context.Background(), client, "bucket")
 	if err == nil {
 		t.Fatal("expected error from server")
+	}
+}
+
+func TestEmptyBucketDeleteObjectsErrors(t *testing.T) {
+	client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, xmlResponse(`
+				<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+					<Name>bucket</Name>
+					<Contents>
+						<Key>x.txt</Key>
+						<Size>1</Size>
+						<LastModified>2024-01-01T00:00:00Z</LastModified>
+						<ETag>"x"</ETag>
+						<StorageClass>STANDARD</StorageClass>
+					</Contents>
+				</ListBucketResult>`))
+			return
+		}
+		if r.Method == "POST" && r.URL.Query().Has("delete") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+				<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+					<Deleted><Key>x.txt</Key></Deleted>
+					<Error>
+						<Key>locked.txt</Key>
+						<Code>AccessDenied</Code>
+						<Message>Access Denied</Message>
+					</Error>
+				</DeleteResult>`)
+			return
+		}
+		t.Errorf("unexpected: %s %s", r.Method, r.URL)
+	})
+
+	err := EmptyBucket(context.Background(), client, "bucket")
+	if err == nil {
+		t.Fatal("expected error from DeleteObjects partial failure")
+	}
+	if !strings.Contains(err.Error(), "failed to delete 1 object") {
+		t.Errorf("EmptyBucket error = %v, want 'failed to delete 1 object'", err)
 	}
 }
 

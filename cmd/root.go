@@ -5,6 +5,12 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/syasika/miniaws/cmd/browse"
+	"github.com/syasika/miniaws/cmd/container"
+	"github.com/syasika/miniaws/cmd/s3"
+	"github.com/syasika/miniaws/cmd/sqs"
+	"github.com/syasika/miniaws/cmd/ssm"
 )
 
 var rootCmd = &cobra.Command{
@@ -25,10 +31,11 @@ func Execute() {
 
 func init() {
 	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(containerCmd)
-	rootCmd.AddCommand(s3Cmd)
-	rootCmd.AddCommand(ssmCmd)
-	rootCmd.AddCommand(sqsCmd)
+	rootCmd.AddCommand(container.Cmd())
+	rootCmd.AddCommand(s3.Cmd())
+	rootCmd.AddCommand(ssm.Cmd())
+	rootCmd.AddCommand(sqs.Cmd())
+	rootCmd.AddCommand(browse.Cmd())
 
 	rootCmd.PersistentFlags().String("endpoint-url", "http://localhost:4566", "Ministack endpoint URL")
 }

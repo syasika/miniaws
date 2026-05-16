@@ -1,15 +1,30 @@
-package cmd
+// Package ssm provides the miniaws ssm CLI subcommand.
+package ssm
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/syasika/miniaws/internal/awsclient"
 	"github.com/syasika/miniaws/internal/ssmops"
 )
+
+var (
+	bucketStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	sizeStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	headerStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("33")).Padding(0, 1)
+	emptyStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
+	successStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	containerLabelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	containerValueStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+)
+
+// Cmd returns the ssm command.
+func Cmd() *cobra.Command { return ssmCmd }
 
 var ssmCmd = &cobra.Command{
 	Use:   "ssm",

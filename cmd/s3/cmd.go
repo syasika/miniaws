@@ -1,4 +1,5 @@
-package cmd
+// Package s3 provides the miniaws s3 CLI subcommand.
+package s3
 
 import (
 	"context"
@@ -21,6 +22,9 @@ var (
 	emptyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 )
+
+// Cmd returns the s3 command.
+func Cmd() *cobra.Command { return s3Cmd }
 
 var s3Cmd = &cobra.Command{
 	Use:   "s3",

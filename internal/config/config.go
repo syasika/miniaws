@@ -1,4 +1,5 @@
-package cmd
+// Package config provides shared configuration for the miniaws CLI.
+package config
 
 import (
 	"encoding/json"
@@ -6,6 +7,7 @@ import (
 	"path/filepath"
 )
 
+// Config holds the miniaws container configuration persisted to disk.
 type Config struct {
 	ContainerName string `json:"containerName"`
 	ImageName     string `json:"imageName"`
@@ -25,6 +27,8 @@ func configFilePath() (string, error) {
 	return filepath.Join(configDir, "config.json"), nil
 }
 
+// LoadConfig reads the config file from ~/.miniaws/config.json.
+// Returns nil, nil if the file doesn't exist.
 func LoadConfig() (*Config, error) {
 	path, err := configFilePath()
 	if err != nil {
@@ -37,21 +41,34 @@ func LoadConfig() (*Config, error) {
 		}
 		return nil, err
 	}
-	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, err
 	}
-	return &config, nil
+	return &c, nil
 }
 
-func SaveConfig(config *Config) error {
+// SaveConfig writes config to ~/.miniaws/config.json.
+func SaveConfig(c *Config) error {
 	path, err := configFilePath()
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(config, "", "  ")
+	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+// RemoveConfig deletes the config file. Returns nil if the file doesn't exist.
+func RemoveConfig() error {
+	path, err := configFilePath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

@@ -28,9 +28,14 @@ build/
 .vscode/
 *.swp
 *.swo
-*~
+*~s
 
 # Local config files
 .env
 .env.local
 *.local   
+
+# pi folders
+.pi/
+.pi-lens/
+thoughts/

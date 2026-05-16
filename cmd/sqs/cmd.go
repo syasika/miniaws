@@ -1,15 +1,29 @@
-package cmd
+// Package sqs provides the miniaws sqs CLI subcommand.
+package sqs
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/syasika/miniaws/internal/awsclient"
 	"github.com/syasika/miniaws/internal/sqsops"
 )
+
+var (
+	bucketStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	objectStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	sizeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	headerStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("33")).Padding(0, 1)
+	emptyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
+	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+)
+
+// Cmd returns the sqs command.
+func Cmd() *cobra.Command { return sqsCmd }
 
 var sqsCmd = &cobra.Command{
 	Use:   "sqs",

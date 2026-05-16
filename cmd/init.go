@@ -15,6 +15,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/spf13/cobra"
+
+	"github.com/syasika/miniaws/internal/config"
 )
 
 var initSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
@@ -34,19 +36,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to Docker daemon: %w", err)
 	}
 
-	config, err := LoadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if config != nil {
-		if config.Port == "" {
-			config.Port = "4566"
+	if cfg != nil {
+		if cfg.Port == "" {
+			cfg.Port = "4566"
 		}
-		if config.EndpointURL == "" {
-			config.EndpointURL = "http://localhost:" + config.Port
+		if cfg.EndpointURL == "" {
+			cfg.EndpointURL = "http://localhost:" + cfg.Port
 		}
-		ci, err := inspectContainer(ctx, cli, config.ContainerName)
+		ci, err := inspectContainer(ctx, cli, cfg.ContainerName)
 		if err != nil {
 			if !cerrdefs.IsNotFound(err) {
 				return fmt.Errorf("failed to inspect container: %w", err)
@@ -54,21 +56,21 @@ func runInit(cmd *cobra.Command, args []string) error {
 		} else {
 			switch ci.State.Status {
 			case "running":
-				fmt.Printf("%s Container '%s' is already running (image: %s)\n", initSuccess.Render("✓"), config.ContainerName, config.ImageName)
+				fmt.Printf("%s Container '%s' is already running (image: %s)\n", initSuccess.Render("✓"), cfg.ContainerName, cfg.ImageName)
 				return nil
 			case "exited":
-				fmt.Printf("Container '%s' exists but is stopped. Starting it...\n", config.ContainerName)
-				if err := cli.ContainerStart(ctx, config.ContainerName, container.StartOptions{}); err != nil {
+				fmt.Printf("Container '%s' exists but is stopped. Starting it...\n", cfg.ContainerName)
+				if err := cli.ContainerStart(ctx, cfg.ContainerName, container.StartOptions{}); err != nil {
 					return fmt.Errorf("failed to start container: %w", err)
 				}
-				fmt.Printf("%s Container '%s' started\n", initSuccess.Render("✓"), config.ContainerName)
+				fmt.Printf("%s Container '%s' started\n", initSuccess.Render("✓"), cfg.ContainerName)
 				return nil
 			case "paused":
-				fmt.Printf("Container '%s' is paused. Unpausing...\n", config.ContainerName)
-				if err := cli.ContainerUnpause(ctx, config.ContainerName); err != nil {
+				fmt.Printf("Container '%s' is paused. Unpausing...\n", cfg.ContainerName)
+				if err := cli.ContainerUnpause(ctx, cfg.ContainerName); err != nil {
 					return fmt.Errorf("failed to unpause container: %w", err)
 				}
-				fmt.Printf("%s Container '%s' unpaused\n", initSuccess.Render("✓"), config.ContainerName)
+				fmt.Printf("%s Container '%s' unpaused\n", initSuccess.Render("✓"), cfg.ContainerName)
 				return nil
 			default:
 				return fmt.Errorf("unexpected container state: %s", ci.State.Status)
@@ -77,20 +79,20 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("No running ministack container found. Let's set one up.")
-	config, err = promptSetup()
+	cfg, err = promptSetup()
 	if err != nil {
 		return fmt.Errorf("setup cancelled: %w", err)
 	}
 
-	if err := ensureContainer(ctx, cli, config); err != nil {
+	if err := ensureContainer(ctx, cli, cfg); err != nil {
 		return fmt.Errorf("failed to set up container: %w", err)
 	}
 
-	if err := SaveConfig(config); err != nil {
+	if err := config.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	fmt.Printf("%s Container '%s' is running (image: %s)\n", initSuccess.Render("✓"), config.ContainerName, config.ImageName)
+	fmt.Printf("%s Container '%s' is running (image: %s)\n", initSuccess.Render("✓"), cfg.ContainerName, cfg.ImageName)
 	return nil
 }
 
@@ -98,7 +100,7 @@ func inspectContainer(ctx context.Context, cli *client.Client, name string) (con
 	return cli.ContainerInspect(ctx, name)
 }
 
-func promptSetup() (*Config, error) {
+func promptSetup() (*config.Config, error) {
 	reader := bufio.NewReader(os.Stdin)
 
 	var containerName string
@@ -134,7 +136,7 @@ func promptSetup() (*Config, error) {
 	port := "4566"
 	endpointURL := "http://localhost:" + port
 
-	return &Config{
+	return &config.Config{
 		ContainerName: containerName,
 		ImageName:     imageName,
 		Port:          port,
@@ -142,22 +144,22 @@ func promptSetup() (*Config, error) {
 	}, nil
 }
 
-func ensureContainer(ctx context.Context, cli *client.Client, config *Config) error {
+func ensureContainer(ctx context.Context, cli *client.Client, cfg *config.Config) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
-		_, err := inspectContainer(ctx, cli, config.ContainerName)
+		_, err := inspectContainer(ctx, cli, cfg.ContainerName)
 		if err == nil {
-			fmt.Printf("%s Container '%s' already exists. Starting it...\n", initSuccess.Render("✓"), config.ContainerName)
-			return cli.ContainerStart(ctx, config.ContainerName, container.StartOptions{})
+			fmt.Printf("%s Container '%s' already exists. Starting it...\n", initSuccess.Render("✓"), cfg.ContainerName)
+			return cli.ContainerStart(ctx, cfg.ContainerName, container.StartOptions{})
 		}
 
 		if !cerrdefs.IsNotFound(err) {
 			return fmt.Errorf("failed to inspect container: %w", err)
 		}
 
-		fmt.Printf("Pulling image '%s'...\n", config.ImageName)
-		pullReader, err := cli.ImagePull(ctx, config.ImageName, image.PullOptions{})
+		fmt.Printf("Pulling image '%s'...\n", cfg.ImageName)
+		pullReader, err := cli.ImagePull(ctx, cfg.ImageName, image.PullOptions{})
 		if err != nil {
 			fmt.Printf("⚠ Failed to pull image: %s\n", err)
 			fmt.Print("Enter a different Docker image (or press Ctrl+C to cancel): ")
@@ -166,7 +168,7 @@ func ensureContainer(ctx context.Context, cli *client.Client, config *Config) er
 			if input == "" {
 				return fmt.Errorf("no image provided")
 			}
-			config.ImageName = input
+			cfg.ImageName = input
 			continue
 		}
 		_, err = io.Copy(io.Discard, pullReader)
@@ -175,20 +177,20 @@ func ensureContainer(ctx context.Context, cli *client.Client, config *Config) er
 			return fmt.Errorf("failed to pull image: %w", err)
 		}
 
-		fmt.Printf("Creating container '%s'...\n", config.ContainerName)
+		fmt.Printf("Creating container '%s'...\n", cfg.ContainerName)
 
-		if config.Port == "" {
-			config.Port = "4566"
+		if cfg.Port == "" {
+			cfg.Port = "4566"
 		}
-		port := nat.Port(config.Port + "/tcp")
+		port := nat.Port(cfg.Port + "/tcp")
 		resp, err := cli.ContainerCreate(ctx, &container.Config{
-			Image:        config.ImageName,
+			Image:        cfg.ImageName,
 			ExposedPorts: nat.PortSet{port: struct{}{}},
 		}, &container.HostConfig{
 			PortBindings: nat.PortMap{
-				port: []nat.PortBinding{{HostPort: config.Port, HostIP: "0.0.0.0"}},
+				port: []nat.PortBinding{{HostPort: cfg.Port, HostIP: "0.0.0.0"}},
 			},
-		}, nil, nil, config.ContainerName)
+		}, nil, nil, cfg.ContainerName)
 		if err != nil {
 			return fmt.Errorf("failed to create container: %w", err)
 		}

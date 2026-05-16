@@ -1,15 +1,17 @@
-package cmd
+// Package container provides the miniaws container CLI subcommand.
+package container
 
 import (
 	"context"
 	"fmt"
-	"os"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
+
+	"github.com/syasika/miniaws/internal/config"
 )
 
 var (
@@ -21,35 +23,42 @@ var (
 	containerSuccess    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 )
 
+// Cmd returns the container command.
+func Cmd() *cobra.Command { return containerCmd }
+
 var containerCmd = &cobra.Command{
 	Use:   "container",
 	Short: "Manage the ministack container",
 	Long:  `Start, stop, remove, or check the status of the ministack Docker container.`,
 }
 
+func newDockerClient() (*client.Client, error) {
+	return client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Check the status of the ministack container",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		config, err := LoadConfig()
+		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
-		if config == nil {
+		if cfg == nil {
 			fmt.Println("Not initialized. Run 'miniaws init' first.")
 			return nil
 		}
 
 		ctx := context.Background()
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := newDockerClient()
 		if err != nil {
 			return fmt.Errorf("failed to connect to Docker: %w", err)
 		}
 
-		ci, err := inspectContainer(ctx, cli, config.ContainerName)
+		ci, err := cli.ContainerInspect(ctx, cfg.ContainerName)
 		if err != nil {
 			if cerrdefs.IsNotFound(err) {
-				fmt.Printf("Container '%s' not found\n", config.ContainerName)
+				fmt.Printf("Container '%s' not found\n", cfg.ContainerName)
 				return nil
 			}
 			return fmt.Errorf("failed to inspect container: %w", err)
@@ -62,8 +71,8 @@ var statusCmd = &cobra.Command{
 			statusSymbol = "● " + ci.State.Status
 		}
 
-		fmt.Printf("%s  %s\n", containerLabelStyle.Render("Container:"), containerValueStyle.Render(config.ContainerName))
-		fmt.Printf("%s  %s\n", containerLabelStyle.Render("Image:"), containerValueStyle.Render(config.ImageName))
+		fmt.Printf("%s  %s\n", containerLabelStyle.Render("Container:"), containerValueStyle.Render(cfg.ContainerName))
+		fmt.Printf("%s  %s\n", containerLabelStyle.Render("Image:"), containerValueStyle.Render(cfg.ImageName))
 		fmt.Printf("%s  %s\n", containerLabelStyle.Render("Status:"), statusStyle.Render(statusSymbol))
 		if ci.State.Status == "running" {
 			fmt.Printf("%s  %s\n", containerLabelStyle.Render("Started:"), containerValueStyle.Render(ci.State.StartedAt))
@@ -76,25 +85,25 @@ var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the ministack container",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		config, err := LoadConfig()
+		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
-		if config == nil {
+		if cfg == nil {
 			return fmt.Errorf("not initialized, run 'miniaws init' first")
 		}
 
 		ctx := context.Background()
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := newDockerClient()
 		if err != nil {
 			return fmt.Errorf("failed to connect to Docker: %w", err)
 		}
 
-		if err := cli.ContainerStart(ctx, config.ContainerName, container.StartOptions{}); err != nil {
+		if err := cli.ContainerStart(ctx, cfg.ContainerName, container.StartOptions{}); err != nil {
 			return fmt.Errorf("failed to start container: %w", err)
 		}
 
-		fmt.Printf("%s Container '%s' started\n", containerSuccess.Render("✓"), config.ContainerName)
+		fmt.Printf("%s Container '%s' started\n", containerSuccess.Render("✓"), cfg.ContainerName)
 		return nil
 	},
 }
@@ -103,33 +112,31 @@ var containerRemoveCmd = &cobra.Command{
 	Use:   "remove",
 	Short: "Remove the ministack container and reset configuration",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		config, err := LoadConfig()
+		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
-		if config == nil {
+		if cfg == nil {
 			return fmt.Errorf("not initialized, run 'miniaws init' first")
 		}
 
 		ctx := context.Background()
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := newDockerClient()
 		if err != nil {
 			return fmt.Errorf("failed to connect to Docker: %w", err)
 		}
 
 		force, _ := cmd.Flags().GetBool("force")
 
-		if err := cli.ContainerRemove(ctx, config.ContainerName, container.RemoveOptions{Force: force}); err != nil {
+		if err := cli.ContainerRemove(ctx, cfg.ContainerName, container.RemoveOptions{Force: force}); err != nil {
 			return fmt.Errorf("failed to remove container: %w", err)
 		}
 
-		path, err := configFilePath()
-		if err != nil {
-			return fmt.Errorf("failed to get config path: %w", err)
+		if err := config.RemoveConfig(); err != nil {
+			return fmt.Errorf("failed to remove config: %w", err)
 		}
-		os.Remove(path)
 
-		fmt.Printf("%s Container '%s' removed\n", containerSuccess.Render("✓"), config.ContainerName)
+		fmt.Printf("%s Container '%s' removed\n", containerSuccess.Render("✓"), cfg.ContainerName)
 		return nil
 	},
 }
@@ -138,25 +145,25 @@ var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the ministack container",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		config, err := LoadConfig()
+		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
-		if config == nil {
+		if cfg == nil {
 			return fmt.Errorf("not initialized, run 'miniaws init' first")
 		}
 
 		ctx := context.Background()
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := newDockerClient()
 		if err != nil {
 			return fmt.Errorf("failed to connect to Docker: %w", err)
 		}
 
-		if err := cli.ContainerStop(ctx, config.ContainerName, container.StopOptions{}); err != nil {
+		if err := cli.ContainerStop(ctx, cfg.ContainerName, container.StopOptions{}); err != nil {
 			return fmt.Errorf("failed to stop container: %w", err)
 		}
 
-		fmt.Printf("%s Container '%s' stopped\n", containerSuccess.Render("✓"), config.ContainerName)
+		fmt.Printf("%s Container '%s' stopped\n", containerSuccess.Render("✓"), cfg.ContainerName)
 		return nil
 	},
 }

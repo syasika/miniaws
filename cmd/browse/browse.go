@@ -1,4 +1,5 @@
-package cmd
+// Package browse provides the interactive TUI dashboard.
+package browse
 
 import (
 	"context"
@@ -15,6 +16,9 @@ import (
 	"github.com/syasika/miniaws/internal/s3ops"
 	"github.com/syasika/miniaws/internal/sqsops"
 )
+
+// Cmd returns the browse command.
+func Cmd() *cobra.Command { return browseCmd }
 
 var browseCmd = &cobra.Command{
 	Use:   "browse",
@@ -619,8 +623,4 @@ func (m model) View() string {
 		m.width = 80
 	}
 	return m.dashboardView()
-}
-
-func init() {
-	rootCmd.AddCommand(browseCmd)
 }
